@@ -2,12 +2,13 @@
 Tool calls go to stderr, the answer to stdout."""
 import json
 import sys
+from typing import Any
 
 from . import config
 from .loop import run_agent
 
 
-def main(argv: list[str]) -> int:
+def main(argv: list[str], client: Any = None) -> int:
     if len(argv) < 2:
         print('usage: python -m agent "<question>"', file=sys.stderr)
         return 2
@@ -19,9 +20,17 @@ def main(argv: list[str]) -> int:
         )
         return 2
 
-    from openai import OpenAI  # imported here so tests and tools don't need the SDK
+    from openai import OpenAI, OpenAIError  # imported here so tests and tools don't need the SDK
 
-    result = run_agent(" ".join(argv[1:]), OpenAI(), model, temperature=config.temperature())
+    try:
+        result = run_agent(
+            " ".join(argv[1:]), client or OpenAI(), model, temperature=config.temperature()
+        )
+    except OpenAIError as exc:  # bad key, no credits, rate limit, provider rejected the request
+        text = str(exc)
+        print(f"API error: {text[:500]}", file=sys.stderr)
+        return 1
+
     for call in result.tool_calls:
         print(f"[tool] {call.name} {json.dumps(call.arguments)} -> {call.error_type or 'ok'}", file=sys.stderr)
     print(result.answer)

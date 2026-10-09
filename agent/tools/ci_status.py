@@ -73,9 +73,9 @@ TOOL = Tool(
     parameters={
         "type": "object",
         "properties": {
-            "repo": {"type": "string", "description": "owner/name. Omit to use the default repo."},
-            "workflow": {"type": "string", "description": "Workflow file name, e.g. ci.yml"},
-            "branch": {"type": "string", "description": "Only consider runs on this branch"},
+            "repo": {"type": ["string", "null"], "description": "owner/name. Omit to use the default repo."},
+            "workflow": {"type": ["string", "null"], "description": "Workflow file name, e.g. ci.yml"},
+            "branch": {"type": ["string", "null"], "description": "Only consider runs on this branch"},
         },
         "required": [],
         "additionalProperties": False,

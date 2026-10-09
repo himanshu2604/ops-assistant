@@ -53,3 +53,18 @@ def test_other_exceptions_become_tool_failure(monkeypatch):
     _swap(monkeypatch, boom)
     out = run_tool("get_pod_status", {})
     assert out["error_type"] == "tool_failure" and "cluster unreachable" in out["error"]
+
+
+def test_optional_ci_arguments_accept_null_in_the_schema():
+    props = TOOLS["get_latest_ci_run"].parameters["properties"]
+    for name in ("repo", "workflow", "branch"):
+        assert "null" in props[name]["type"]
+
+
+def test_long_errors_are_clipped(monkeypatch):
+    def boom():
+        raise RuntimeError("<html>" + "x" * 5000)
+
+    _swap(monkeypatch, boom)
+    out = run_tool("get_pod_status", {})
+    assert len(out["error"]) < 600 and out["error"].endswith("[truncated]")

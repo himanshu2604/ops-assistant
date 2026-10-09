@@ -87,3 +87,11 @@ def test_rejects_bad_input_without_calling_api(kwargs):
     with pytest.raises(ValueError):
         get_latest_ci_run(http_get=http, **kwargs)
     assert http.calls == []
+
+
+def test_null_optional_arguments_behave_like_omitted():
+    http = fake_http(run_payload())
+    out = get_latest_ci_run(repo=None, workflow=None, branch=None, http_get=http)
+    assert out["found"]
+    url, _, params = http.calls[0]
+    assert url.endswith("/actions/runs") and params == {"per_page": "1"}

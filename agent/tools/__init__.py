@@ -15,6 +15,13 @@ def tool_specs() -> list[dict[str, Any]]:
     ]
 
 
+MAX_ERROR_CHARS = 500
+
+
+def _clip(text: str) -> str:
+    return text if len(text) <= MAX_ERROR_CHARS else text[:MAX_ERROR_CHARS] + " [truncated]"
+
+
 def _check_args(tool: Tool, args: dict[str, Any]) -> str | None:
     props = tool.parameters.get("properties", {})
     unexpected = sorted(set(args) - set(props))
@@ -35,10 +42,10 @@ def run_tool(name: str, args: dict[str, Any] | None) -> dict[str, Any]:
     args = args or {}
     problem = _check_args(tool, args)
     if problem:
-        return {"error": problem, "error_type": "bad_arguments"}
+        return {"error": _clip(problem), "error_type": "bad_arguments"}
     try:
         return tool.fn(**args)
     except ValueError as exc:
-        return {"error": str(exc), "error_type": "invalid_input"}
+        return {"error": _clip(str(exc)), "error_type": "invalid_input"}
     except Exception as exc:  # tool failures are data for the agent, not crashes
-        return {"error": f"{type(exc).__name__}: {exc}", "error_type": "tool_failure"}
+        return {"error": _clip(f"{type(exc).__name__}: {exc}"), "error_type": "tool_failure"}
