@@ -1,44 +1,32 @@
-import copy
 import json
-from types import SimpleNamespace
 
 import pytest
 
 from agent import prompts
 from agent.__main__ import main
 from agent.loop import run_agent
-from agent.tools import TOOLS, Tool
+from agent.tools import TOOLS
+from helpers import POD_RESULT, FakeClient, reply, stub_tool, tool_call, usage
 
 
-def tool_call(name, args, id_="call_1"):
-    raw = args if isinstance(args, str) else json.dumps(args)
-    return SimpleNamespace(id=id_, type="function", function=SimpleNamespace(name=name, arguments=raw))
+class RecordingTracer:
+    def __init__(self):
+        self.events = []
 
+    def start(self, question, metadata):
+        self.events.append(("start", question, metadata))
 
-def reply(content=None, calls=None):
-    message = SimpleNamespace(content=content, tool_calls=calls)
-    return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+    def llm_call(self, **kw):
+        self.events.append(("llm_call", kw))
 
+    def tool_call(self, **kw):
+        self.events.append(("tool_call", kw))
 
-class FakeClient:
-    """Scripted stand-in for the OpenAI client. Snapshots each request so later mutation can't hide bugs."""
+    def finish(self, **kw):
+        self.events.append(("finish", kw))
 
-    def __init__(self, *responses):
-        self.requests = []
-        self._responses = list(responses)
-        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
-
-    def _create(self, **kwargs):
-        self.requests.append(copy.deepcopy(kwargs))
-        return self._responses.pop(0)
-
-
-def stub_tool(monkeypatch, name, fn):
-    spec = TOOLS[name]
-    monkeypatch.setitem(TOOLS, name, Tool(name, spec.description, spec.parameters, fn))
-
-
-POD_RESULT = {"namespace": "mlops-fraud", "total": 2, "unhealthy_count": 1, "pods": []}
+    def flush(self):
+        self.events.append(("flush",))
 
 
 def test_answers_without_tools():
@@ -141,3 +129,54 @@ def test_cli_needs_a_question_and_a_model(monkeypatch):
     monkeypatch.delenv("OPS_MODEL", raising=False)
     assert main(["agent"]) == 2
     assert main(["agent", "which pods are unhealthy?"]) == 2
+
+
+def test_tokens_and_latency_are_captured(monkeypatch):
+    stub_tool(monkeypatch, "get_pod_status", lambda namespace: POD_RESULT)
+    client = FakeClient(
+        reply(calls=[tool_call("get_pod_status", {"namespace": "a"})], usage=usage(100, 20)),
+        reply("done", usage=usage(150, 12)),
+    )
+    out = run_agent("q", client, "m")
+    assert (out.prompt_tokens, out.completion_tokens) == (250, 32)
+    assert out.latency_ms > 0 and out.tool_calls[0].duration_ms >= 0
+
+
+def test_missing_usage_counts_as_zero():
+    out = run_agent("q", FakeClient(reply("hi")), "m")
+    assert (out.prompt_tokens, out.completion_tokens) == (0, 0)
+
+
+def test_tracer_sees_every_step_in_order(monkeypatch):
+    stub_tool(monkeypatch, "get_pod_status", lambda namespace: POD_RESULT)
+    tracer = RecordingTracer()
+    client = FakeClient(
+        reply(calls=[tool_call("get_pod_status", {"namespace": "a"}, "c1")], usage=usage(10, 5)),
+        reply("done", usage=usage(20, 6)),
+    )
+    run_agent("which pods?", client, "m", tracer=tracer)
+    assert [e[0] for e in tracer.events] == ["start", "llm_call", "tool_call", "llm_call", "finish"]
+
+    _, question, meta = tracer.events[0]
+    assert question == "which pods?"
+    assert meta["model"] == "m" and meta["prompt_version"] == prompts.PROMPT_VERSION
+
+    first_llm = tracer.events[1][1]
+    assert first_llm["step"] == 1 and first_llm["usage"]["prompt_tokens"] == 10
+    assert first_llm["output"]["tool_calls"][0]["id"] == "c1"
+    assert [m["role"] for m in first_llm["messages"]] == ["system", "user"]  # what the model saw
+
+    tool_event = tracer.events[2][1]
+    assert tool_event["call_id"] == "c1" and tool_event["result"] == POD_RESULT
+
+    finish = tracer.events[-1][1]
+    assert finish["answer"] == "done" and finish["stopped_reason"] == "answer"
+
+
+def test_model_error_is_traced_then_raised():
+    tracer = RecordingTracer()
+    client = FakeClient(error=RuntimeError("provider down"))
+    with pytest.raises(RuntimeError):
+        run_agent("q", client, "m", tracer=tracer)
+    finish = tracer.events[-1][1]
+    assert finish["stopped_reason"] == "model_error" and "provider down" in finish["answer"]

@@ -2,7 +2,7 @@
 
 A small agent that answers infrastructure questions about the mlops-fraud-pipeline project by calling read-only tools. Calls are traced and evaluated with Galileo AI.
 
-Status: tools and agent loop built and unit-tested. Galileo tracing, eval suite and CI gate are not built yet.
+Status: tools, agent loop and Galileo tracing built and unit-tested. Eval dataset, experiment harness and CI gate are not built yet.
 
 ## Tools
 
@@ -20,11 +20,20 @@ All three are read-only. `kubectl` runs with a fixed command and only the namesp
 
 The OpenAI client is passed in, so tests script the model with a fake and a Galileo-wrapped client can be dropped in later.
 
+## Tracing
+
+Set `GALILEO_API_KEY`, `GALILEO_PROJECT` and `GALILEO_LOG_STREAM` and every question is logged to Galileo as one trace: an LLM span per model call (input messages, tool calls, token counts, latency) and a tool span per tool call (arguments, result, latency, linked to the model's call by `tool_call_id`). Trace metadata carries the model, prompt version, git commit and whether the run came from CI or a person. Without a key, tracing is off.
+
+Tracing is best-effort. If Galileo is unreachable or a call fails, tracing switches itself off for that question and the agent still answers. `loop.py` never imports Galileo; it talks to a small tracer interface in `agent/tracing.py`. Spans are logged manually, so don't also import `galileo.openai`, which would log every model call a second time.
+
+`tests/test_tracing_galileo.py` runs the tracer through the real Galileo SDK offline (its ingestion hook captures what would be sent), so the logged structure is tested without a network or a key.
+
 ## Setup
 
 ```
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
+cp .env.example .env   # then fill it in
 pytest
 ```
 
@@ -58,6 +67,9 @@ kubectl -n monitoring port-forward svc/<prometheus-service> 9090:9090
 |---|---|
 | `OPENAI_API_KEY` | required for the agent |
 | `OPS_MODEL` | required for the agent, no default |
+| `OPENAI_BASE_URL` | unset (set it to use a non-OpenAI provider; set it together with that provider's key) |
+| `GALILEO_API_KEY` | unset (tracing off) |
+| `GALILEO_PROJECT`, `GALILEO_LOG_STREAM` | required when tracing is on |
 | `OPS_TEMPERATURE` | unset (some newer models reject a custom temperature) |
 | `OPS_GITHUB_REPO` | `himanshu2604/mlops-fraud-pipeline` |
 | `OPS_PROMETHEUS_URL` | `http://localhost:9090` |
